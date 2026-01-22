@@ -73,6 +73,10 @@ A comprehensive guide to designing, building, and deploying production-grade mac
     - [NLP Systems](./10-end-to-end-systems/nlp-systems.md)
     - [Time Series Forecasting](./10-end-to-end-systems/time-series-forecasting.md)
 
+### Interview Preparation
+- [Interview Questions](./interview-questions.md) - Common ML system design interview questions
+- [Cheatsheet](./cheatsheet.md) - Quick reference for ML system design
+
 ---
 
 ## 🎯 Learning Path

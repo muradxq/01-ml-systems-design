@@ -309,10 +309,282 @@ ML systems face unique challenges that don't exist in traditional software. Unde
 
 ---
 
+## 🛠️ Practical Solutions with Code
+
+### Challenge: Training-Serving Skew
+
+Training-serving skew occurs when features used during training differ from those at inference time.
+
+```python
+class FeatureConsistencyChecker:
+    """Detect and prevent training-serving skew."""
+    
+    def __init__(self, training_feature_stats: Dict):
+        self.training_stats = training_feature_stats
+        
+    def check_feature_consistency(self, serving_features: Dict) -> Dict:
+        """Compare serving features against training distribution."""
+        issues = []
+        
+        for feature_name, value in serving_features.items():
+            if feature_name not in self.training_stats:
+                issues.append({
+                    'feature': feature_name,
+                    'issue': 'missing_in_training',
+                    'severity': 'high'
+                })
+                continue
+                
+            stats = self.training_stats[feature_name]
+            
+            # Check if value is within expected range
+            if value < stats['min'] or value > stats['max']:
+                issues.append({
+                    'feature': feature_name,
+                    'issue': 'out_of_range',
+                    'value': value,
+                    'expected_range': (stats['min'], stats['max']),
+                    'severity': 'medium'
+                })
+            
+            # Check if value is more than 3 std from mean
+            z_score = abs(value - stats['mean']) / stats['std']
+            if z_score > 3:
+                issues.append({
+                    'feature': feature_name,
+                    'issue': 'outlier',
+                    'z_score': z_score,
+                    'severity': 'low'
+                })
+        
+        return {
+            'consistent': len(issues) == 0,
+            'issues': issues,
+            'features_checked': len(serving_features)
+        }
+
+# Usage
+checker = FeatureConsistencyChecker(training_stats)
+consistency_report = checker.check_feature_consistency(serving_features)
+if not consistency_report['consistent']:
+    log_warning(f"Feature consistency issues: {consistency_report['issues']}")
+```
+
+### Challenge: Silent Model Failures
+
+Models can fail silently by returning plausible but incorrect predictions.
+
+```python
+class PredictionValidator:
+    """Detect anomalous predictions that may indicate silent failures."""
+    
+    def __init__(self, reference_predictions: np.ndarray):
+        self.ref_mean = np.mean(reference_predictions)
+        self.ref_std = np.std(reference_predictions)
+        self.ref_dist = reference_predictions
+        
+    def validate_prediction(self, prediction: float) -> Dict:
+        """Check if prediction is within expected distribution."""
+        z_score = abs(prediction - self.ref_mean) / self.ref_std
+        
+        # Calculate percentile
+        percentile = (self.ref_dist < prediction).mean() * 100
+        
+        anomaly_detected = z_score > 3 or percentile < 1 or percentile > 99
+        
+        return {
+            'prediction': prediction,
+            'z_score': z_score,
+            'percentile': percentile,
+            'anomaly_detected': anomaly_detected,
+            'action': 'manual_review' if anomaly_detected else 'proceed'
+        }
+    
+    def validate_batch(self, predictions: np.ndarray) -> Dict:
+        """Check batch predictions for distribution shift."""
+        from scipy.stats import ks_2samp
+        
+        stat, p_value = ks_2samp(self.ref_dist, predictions)
+        
+        return {
+            'batch_size': len(predictions),
+            'batch_mean': np.mean(predictions),
+            'expected_mean': self.ref_mean,
+            'distribution_shift': p_value < 0.01,
+            'ks_statistic': stat,
+            'p_value': p_value
+        }
+```
+
+### Challenge: Model Rollback
+
+Implementing safe model rollback when issues are detected.
+
+```python
+class ModelVersionManager:
+    """Manage model versions with rollback capability."""
+    
+    def __init__(self, model_registry_uri: str):
+        self.registry_uri = model_registry_uri
+        self.current_version = None
+        self.previous_version = None
+        
+    def deploy_model(self, version: str, canary_percentage: int = 10):
+        """Deploy new model with canary rollout."""
+        self.previous_version = self.current_version
+        
+        # Stage 1: Canary deployment
+        self._update_traffic_split(
+            new_version=version,
+            new_percentage=canary_percentage
+        )
+        
+        # Monitor for issues
+        if not self._monitor_canary(duration_minutes=30):
+            self.rollback()
+            return False
+        
+        # Stage 2: Gradual rollout
+        for percentage in [25, 50, 75, 100]:
+            self._update_traffic_split(new_version=version, new_percentage=percentage)
+            if not self._monitor_canary(duration_minutes=15):
+                self.rollback()
+                return False
+        
+        self.current_version = version
+        return True
+    
+    def rollback(self):
+        """Rollback to previous model version."""
+        if self.previous_version:
+            print(f"Rolling back from {self.current_version} to {self.previous_version}")
+            self._update_traffic_split(
+                new_version=self.previous_version,
+                new_percentage=100
+            )
+            self.current_version = self.previous_version
+            alert_team(f"Model rollback executed to version {self.previous_version}")
+        else:
+            raise Exception("No previous version available for rollback")
+    
+    def _monitor_canary(self, duration_minutes: int) -> bool:
+        """Monitor canary deployment for issues."""
+        import time
+        
+        start_time = time.time()
+        while time.time() - start_time < duration_minutes * 60:
+            metrics = self._get_current_metrics()
+            
+            # Check for critical issues
+            if metrics['error_rate'] > 0.05:  # 5% error rate
+                return False
+            if metrics['latency_p99'] > 500:  # 500ms latency
+                return False
+            if metrics['prediction_drift'] > 0.1:  # 10% drift
+                return False
+                
+            time.sleep(60)  # Check every minute
+        
+        return True
+```
+
+---
+
+## 🎯 Challenge-Specific Interview Questions
+
+### Data Quality Interview Questions
+
+**Q: How would you handle a sudden spike in missing values in production?**
+
+**Answer:**
+1. **Detection**: Monitor completeness metrics, alert on threshold breach
+2. **Immediate**: Fall back to default values or cached features
+3. **Investigation**: Check upstream data sources
+4. **Resolution**: Fix data pipeline, backfill if possible
+5. **Prevention**: Add validation at ingestion
+
+### Model Degradation Interview Questions
+
+**Q: Your model's precision dropped from 95% to 80% over a week. How do you investigate?**
+
+**Answer:**
+1. Check for **data drift** (input distribution changes)
+2. Look for **concept drift** (relationship changes)
+3. Review **feature pipeline** for computation errors
+4. Check **data quality** metrics
+5. Compare **label distributions** 
+6. Review **recent deployments** or upstream changes
+
+### Scalability Interview Questions
+
+**Q: Design a system that can handle 10,000 predictions per second.**
+
+**Answer:**
+```
+Architecture:
+┌─────────────────────────────────────────────────────────┐
+│                    Load Balancer                         │
+└────────────────────┬────────────────────────────────────┘
+                     │
+         ┌───────────┼───────────┐
+         ▼           ▼           ▼
+┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│   Server 1   │ │   Server 2   │ │   Server N   │
+│  (GPU/CPU)   │ │  (GPU/CPU)   │ │  (GPU/CPU)   │
+└──────────────┘ └──────────────┘ └──────────────┘
+         │           │           │
+         └───────────┼───────────┘
+                     ▼
+         ┌───────────────────────┐
+         │   Redis Cache Layer   │
+         │   (Features + Preds)  │
+         └───────────────────────┘
+
+Key Design Decisions:
+1. Horizontal scaling with auto-scaling
+2. Prediction caching (reduce redundant work)
+3. Feature pre-computation (offline batch)
+4. Model optimization (quantization, pruning)
+5. Request batching (process multiple together)
+```
+
+---
+
+## 📊 Challenge Assessment Checklist
+
+Use this checklist to assess ML system health:
+
+### Data Quality
+- [ ] Missing value rate < 5%
+- [ ] Data freshness < 24 hours
+- [ ] Schema validation passing
+- [ ] Duplicate detection active
+
+### Model Health
+- [ ] Model performance > baseline
+- [ ] Prediction latency < SLA
+- [ ] Drift detection active
+- [ ] Rollback tested
+
+### System Reliability
+- [ ] Uptime > 99.9%
+- [ ] Error rate < 1%
+- [ ] Monitoring dashboards active
+- [ ] Alerting configured
+
+### Security & Compliance
+- [ ] Data encryption enabled
+- [ ] Access controls configured
+- [ ] Audit logging active
+- [ ] Privacy compliance verified
+
+---
+
 ## 📚 Further Reading
 
 - [Hidden Technical Debt in Machine Learning Systems](https://papers.nips.cc/paper/2015/hash/86df7dcfd896fcaf2674f757a2463eba-Abstract.html)
 - [The ML Test Score: A Rubric for ML Production Readiness](https://storage.googleapis.com/pub-tools-public-publication-data/pdf/aad9f93b86b7adfe23ed72af17065adf1df2da94.pdf)
+- [Reliable Machine Learning](https://www.oreilly.com/library/view/reliable-machine-learning/9781098106218/)
 
 ---
 

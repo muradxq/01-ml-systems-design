@@ -420,6 +420,440 @@ def incremental_pipeline(last_processed_date):
 
 ---
 
+## 🛠️ Feature Transformation Library
+
+### Comprehensive Feature Transformations
+
+```python
+from typing import List, Dict, Union, Callable, Optional
+import pandas as pd
+import numpy as np
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder
+from sklearn.feature_extraction.text import TfidfVectorizer
+from category_encoders import TargetEncoder
+import hashlib
+
+class FeatureTransformer:
+    """Library of feature transformation functions."""
+    
+    def __init__(self):
+        self.transformers = {}
+        self.fitted = False
+    
+    # ============ Numerical Transformations ============
+    
+    def standardize(self, df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
+        """Z-score standardization: (x - mean) / std"""
+        if not self.fitted:
+            self.transformers['standardize'] = {}
+            for col in columns:
+                scaler = StandardScaler()
+                df[f'{col}_std'] = scaler.fit_transform(df[[col]])
+                self.transformers['standardize'][col] = scaler
+        else:
+            for col in columns:
+                scaler = self.transformers['standardize'][col]
+                df[f'{col}_std'] = scaler.transform(df[[col]])
+        return df
+    
+    def normalize(self, df: pd.DataFrame, columns: List[str],
+                  range_min: float = 0, range_max: float = 1) -> pd.DataFrame:
+        """Min-max normalization to [0, 1] or custom range."""
+        if not self.fitted:
+            self.transformers['normalize'] = {}
+            for col in columns:
+                scaler = MinMaxScaler(feature_range=(range_min, range_max))
+                df[f'{col}_norm'] = scaler.fit_transform(df[[col]])
+                self.transformers['normalize'][col] = scaler
+        else:
+            for col in columns:
+                scaler = self.transformers['normalize'][col]
+                df[f'{col}_norm'] = scaler.transform(df[[col]])
+        return df
+    
+    def log_transform(self, df: pd.DataFrame, columns: List[str],
+                      offset: float = 1) -> pd.DataFrame:
+        """Log transformation for skewed distributions."""
+        for col in columns:
+            df[f'{col}_log'] = np.log1p(df[col] + offset)
+        return df
+    
+    def binning(self, df: pd.DataFrame, column: str, 
+                bins: Union[int, List[float]], labels: List[str] = None) -> pd.DataFrame:
+        """Discretize continuous features into bins."""
+        df[f'{column}_binned'] = pd.cut(df[column], bins=bins, labels=labels)
+        return df
+    
+    def quantile_binning(self, df: pd.DataFrame, column: str,
+                         n_quantiles: int = 4) -> pd.DataFrame:
+        """Binning based on quantiles."""
+        df[f'{column}_quantile'] = pd.qcut(df[column], q=n_quantiles, 
+                                            labels=[f'q{i}' for i in range(n_quantiles)],
+                                            duplicates='drop')
+        return df
+    
+    # ============ Categorical Transformations ============
+    
+    def one_hot_encode(self, df: pd.DataFrame, columns: List[str],
+                       max_categories: int = 50) -> pd.DataFrame:
+        """One-hot encoding for categorical features."""
+        for col in columns:
+            # Limit to top categories to avoid explosion
+            top_categories = df[col].value_counts().nlargest(max_categories).index
+            df[col] = df[col].apply(lambda x: x if x in top_categories else 'OTHER')
+            
+            dummies = pd.get_dummies(df[col], prefix=col)
+            df = pd.concat([df, dummies], axis=1)
+        return df
+    
+    def label_encode(self, df: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
+        """Label encoding for ordinal categories."""
+        if not self.fitted:
+            self.transformers['label_encode'] = {}
+            for col in columns:
+                encoder = LabelEncoder()
+                df[f'{col}_encoded'] = encoder.fit_transform(df[col].fillna('MISSING'))
+                self.transformers['label_encode'][col] = encoder
+        else:
+            for col in columns:
+                encoder = self.transformers['label_encode'][col]
+                # Handle unseen categories
+                df[f'{col}_encoded'] = df[col].apply(
+                    lambda x: encoder.transform([x])[0] if x in encoder.classes_ else -1
+                )
+        return df
+    
+    def target_encode(self, df: pd.DataFrame, columns: List[str],
+                      target: str, smoothing: float = 1.0) -> pd.DataFrame:
+        """Target encoding with smoothing to prevent overfitting."""
+        if not self.fitted:
+            self.transformers['target_encode'] = {}
+            for col in columns:
+                encoder = TargetEncoder(smoothing=smoothing)
+                df[f'{col}_target_enc'] = encoder.fit_transform(df[col], df[target])
+                self.transformers['target_encode'][col] = encoder
+        else:
+            for col in columns:
+                encoder = self.transformers['target_encode'][col]
+                df[f'{col}_target_enc'] = encoder.transform(df[col])
+        return df
+    
+    def hash_encode(self, df: pd.DataFrame, column: str,
+                    n_buckets: int = 100) -> pd.DataFrame:
+        """Hash encoding for high-cardinality categorical features."""
+        df[f'{column}_hash'] = df[column].apply(
+            lambda x: int(hashlib.md5(str(x).encode()).hexdigest(), 16) % n_buckets
+        )
+        return df
+    
+    # ============ Text Transformations ============
+    
+    def tfidf_features(self, df: pd.DataFrame, column: str,
+                       max_features: int = 100) -> pd.DataFrame:
+        """TF-IDF features for text columns."""
+        if not self.fitted:
+            vectorizer = TfidfVectorizer(max_features=max_features)
+            tfidf_matrix = vectorizer.fit_transform(df[column].fillna(''))
+            self.transformers['tfidf'] = {column: vectorizer}
+        else:
+            vectorizer = self.transformers['tfidf'][column]
+            tfidf_matrix = vectorizer.transform(df[column].fillna(''))
+        
+        # Add TF-IDF features as columns
+        feature_names = [f'{column}_tfidf_{i}' for i in range(tfidf_matrix.shape[1])]
+        tfidf_df = pd.DataFrame(tfidf_matrix.toarray(), columns=feature_names, index=df.index)
+        return pd.concat([df, tfidf_df], axis=1)
+    
+    def text_statistics(self, df: pd.DataFrame, column: str) -> pd.DataFrame:
+        """Extract statistical features from text."""
+        df[f'{column}_length'] = df[column].str.len()
+        df[f'{column}_word_count'] = df[column].str.split().str.len()
+        df[f'{column}_unique_words'] = df[column].apply(
+            lambda x: len(set(str(x).split())) if pd.notna(x) else 0
+        )
+        df[f'{column}_avg_word_length'] = df[column].apply(
+            lambda x: np.mean([len(w) for w in str(x).split()]) if pd.notna(x) else 0
+        )
+        return df
+    
+    # ============ Time-Based Transformations ============
+    
+    def datetime_features(self, df: pd.DataFrame, column: str) -> pd.DataFrame:
+        """Extract features from datetime column."""
+        df[column] = pd.to_datetime(df[column])
+        
+        df[f'{column}_year'] = df[column].dt.year
+        df[f'{column}_month'] = df[column].dt.month
+        df[f'{column}_day'] = df[column].dt.day
+        df[f'{column}_dayofweek'] = df[column].dt.dayofweek
+        df[f'{column}_hour'] = df[column].dt.hour
+        df[f'{column}_is_weekend'] = df[column].dt.dayofweek >= 5
+        df[f'{column}_quarter'] = df[column].dt.quarter
+        df[f'{column}_is_month_start'] = df[column].dt.is_month_start
+        df[f'{column}_is_month_end'] = df[column].dt.is_month_end
+        
+        return df
+    
+    def cyclical_encode(self, df: pd.DataFrame, column: str,
+                        period: int) -> pd.DataFrame:
+        """Cyclical encoding for periodic features (e.g., hour, day of week)."""
+        df[f'{column}_sin'] = np.sin(2 * np.pi * df[column] / period)
+        df[f'{column}_cos'] = np.cos(2 * np.pi * df[column] / period)
+        return df
+    
+    # ============ Aggregation Features ============
+    
+    def rolling_features(self, df: pd.DataFrame, column: str,
+                         windows: List[int], agg_funcs: List[str]) -> pd.DataFrame:
+        """Rolling window aggregation features."""
+        for window in windows:
+            for func in agg_funcs:
+                col_name = f'{column}_rolling_{window}_{func}'
+                if func == 'mean':
+                    df[col_name] = df[column].rolling(window=window).mean()
+                elif func == 'std':
+                    df[col_name] = df[column].rolling(window=window).std()
+                elif func == 'min':
+                    df[col_name] = df[column].rolling(window=window).min()
+                elif func == 'max':
+                    df[col_name] = df[column].rolling(window=window).max()
+                elif func == 'sum':
+                    df[col_name] = df[column].rolling(window=window).sum()
+        return df
+    
+    def lag_features(self, df: pd.DataFrame, column: str,
+                     lags: List[int]) -> pd.DataFrame:
+        """Create lag features."""
+        for lag in lags:
+            df[f'{column}_lag_{lag}'] = df[column].shift(lag)
+        return df
+    
+    def group_aggregations(self, df: pd.DataFrame, group_col: str,
+                          agg_col: str, agg_funcs: List[str]) -> pd.DataFrame:
+        """Group-level aggregation features."""
+        agg_dict = {agg_col: agg_funcs}
+        agg_df = df.groupby(group_col).agg(agg_dict)
+        agg_df.columns = [f'{group_col}_{agg_col}_{func}' for func in agg_funcs]
+        return df.merge(agg_df, on=group_col, how='left')
+
+# Usage Example
+transformer = FeatureTransformer()
+
+# Apply transformations
+df = transformer.standardize(df, ['amount', 'age'])
+df = transformer.log_transform(df, ['income'])
+df = transformer.one_hot_encode(df, ['category'])
+df = transformer.target_encode(df, ['merchant'], target='is_fraud')
+df = transformer.datetime_features(df, 'transaction_time')
+df = transformer.cyclical_encode(df, 'hour', period=24)
+df = transformer.rolling_features(df, 'amount', windows=[7, 30], agg_funcs=['mean', 'std'])
+
+transformer.fitted = True  # Mark as fitted for inference
+```
+
+---
+
+### Feature Selection Methods
+
+```python
+from sklearn.feature_selection import (
+    SelectKBest, mutual_info_classif, RFE, 
+    VarianceThreshold, SelectFromModel
+)
+from sklearn.ensemble import RandomForestClassifier
+import numpy as np
+import pandas as pd
+
+class FeatureSelector:
+    """Feature selection methods for ML pipelines."""
+    
+    def __init__(self, target_col: str):
+        self.target_col = target_col
+        self.selected_features = []
+    
+    def variance_filter(self, df: pd.DataFrame, threshold: float = 0.01) -> List[str]:
+        """Remove low-variance features."""
+        feature_cols = [c for c in df.columns if c != self.target_col]
+        numeric_cols = df[feature_cols].select_dtypes(include=[np.number]).columns
+        
+        selector = VarianceThreshold(threshold=threshold)
+        selector.fit(df[numeric_cols])
+        
+        selected = numeric_cols[selector.get_support()].tolist()
+        print(f"Variance filter: {len(numeric_cols)} → {len(selected)} features")
+        return selected
+    
+    def correlation_filter(self, df: pd.DataFrame, threshold: float = 0.95) -> List[str]:
+        """Remove highly correlated features."""
+        feature_cols = [c for c in df.columns if c != self.target_col]
+        numeric_df = df[feature_cols].select_dtypes(include=[np.number])
+        
+        corr_matrix = numeric_df.corr().abs()
+        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+        
+        to_drop = [col for col in upper.columns if any(upper[col] > threshold)]
+        selected = [c for c in numeric_df.columns if c not in to_drop]
+        
+        print(f"Correlation filter: {len(numeric_df.columns)} → {len(selected)} features")
+        return selected
+    
+    def mutual_information(self, df: pd.DataFrame, k: int = 50) -> List[str]:
+        """Select top k features by mutual information."""
+        feature_cols = [c for c in df.columns if c != self.target_col]
+        X = df[feature_cols].select_dtypes(include=[np.number]).fillna(0)
+        y = df[self.target_col]
+        
+        selector = SelectKBest(mutual_info_classif, k=min(k, len(X.columns)))
+        selector.fit(X, y)
+        
+        selected = X.columns[selector.get_support()].tolist()
+        
+        # Get importance scores
+        scores = pd.DataFrame({
+            'feature': X.columns,
+            'mi_score': selector.scores_
+        }).sort_values('mi_score', ascending=False)
+        
+        print(f"Mutual information: top {len(selected)} features selected")
+        return selected, scores
+    
+    def recursive_elimination(self, df: pd.DataFrame, n_features: int = 20,
+                             step: int = 5) -> List[str]:
+        """Recursive feature elimination with cross-validation."""
+        feature_cols = [c for c in df.columns if c != self.target_col]
+        X = df[feature_cols].select_dtypes(include=[np.number]).fillna(0)
+        y = df[self.target_col]
+        
+        estimator = RandomForestClassifier(n_estimators=100, random_state=42)
+        selector = RFE(estimator, n_features_to_select=n_features, step=step)
+        selector.fit(X, y)
+        
+        selected = X.columns[selector.support_].tolist()
+        
+        # Get ranking
+        ranking = pd.DataFrame({
+            'feature': X.columns,
+            'ranking': selector.ranking_
+        }).sort_values('ranking')
+        
+        print(f"RFE: {len(selected)} features selected")
+        return selected, ranking
+    
+    def model_based_selection(self, df: pd.DataFrame, threshold: str = 'median') -> List[str]:
+        """Select features based on model importance."""
+        feature_cols = [c for c in df.columns if c != self.target_col]
+        X = df[feature_cols].select_dtypes(include=[np.number]).fillna(0)
+        y = df[self.target_col]
+        
+        model = RandomForestClassifier(n_estimators=100, random_state=42)
+        model.fit(X, y)
+        
+        selector = SelectFromModel(model, threshold=threshold)
+        selector.fit(X, y)
+        
+        selected = X.columns[selector.get_support()].tolist()
+        
+        # Get importance scores
+        importances = pd.DataFrame({
+            'feature': X.columns,
+            'importance': model.feature_importances_
+        }).sort_values('importance', ascending=False)
+        
+        print(f"Model-based selection: {len(selected)} features selected")
+        return selected, importances
+    
+    def comprehensive_selection(self, df: pd.DataFrame) -> Dict:
+        """Run all selection methods and combine results."""
+        # Run all methods
+        variance_features = set(self.variance_filter(df))
+        corr_features = set(self.correlation_filter(df))
+        mi_features, mi_scores = self.mutual_information(df)
+        mi_features = set(mi_features)
+        rfe_features, rfe_ranking = self.recursive_elimination(df)
+        rfe_features = set(rfe_features)
+        model_features, importance_scores = self.model_based_selection(df)
+        model_features = set(model_features)
+        
+        # Find consensus features (selected by multiple methods)
+        all_features = variance_features | corr_features | mi_features | rfe_features | model_features
+        
+        feature_scores = {}
+        for feature in all_features:
+            score = sum([
+                feature in variance_features,
+                feature in corr_features,
+                feature in mi_features,
+                feature in rfe_features,
+                feature in model_features
+            ])
+            feature_scores[feature] = score
+        
+        # Select features selected by at least 3 methods
+        consensus_features = [f for f, s in feature_scores.items() if s >= 3]
+        
+        return {
+            'consensus_features': consensus_features,
+            'feature_scores': feature_scores,
+            'mi_scores': mi_scores,
+            'importance_scores': importance_scores
+        }
+
+# Usage
+selector = FeatureSelector(target_col='is_fraud')
+selection_results = selector.comprehensive_selection(df)
+final_features = selection_results['consensus_features']
+```
+
+---
+
+## 🎯 Interview Questions
+
+**Q1: How do you handle feature engineering for real-time inference with strict latency requirements (<50ms)?**
+
+**Answer:**
+```
+Strategy: Pre-compute + cache + optimize
+
+1. Pre-compute aggregations (batch):
+   - User history features → Feature store
+   - Running statistics → Updated hourly
+
+2. Real-time features (compute):
+   - Current request features only
+   - Lightweight transformations
+
+3. Caching layers:
+   - L1: In-process cache (LRU)
+   - L2: Redis (feature store)
+   - L3: Database (fallback)
+
+4. Optimization:
+   - Vectorized operations
+   - Compiled transformations (Numba)
+   - Feature subset for inference
+```
+
+**Q2: How do you ensure feature pipeline consistency between training and inference?**
+
+**Answer:**
+1. **Single codebase** - same transformation code
+2. **Feature store** - centralized feature definitions
+3. **Schema enforcement** - validate feature schemas
+4. **Integration tests** - test train/inference parity
+5. **Monitoring** - detect feature drift
+
+**Q3: Explain the difference between target encoding and one-hot encoding.**
+
+| Aspect | One-Hot Encoding | Target Encoding |
+|--------|-----------------|-----------------|
+| Output | Binary columns | Single numeric |
+| Cardinality | High → Many columns | Any → 1 column |
+| Information | Category presence | Target relationship |
+| Leakage risk | None | Yes (needs smoothing) |
+| Best for | Low cardinality | High cardinality |
+
+---
+
 ## 🔑 Key Takeaways
 
 1. **Choose the right type** - batch vs streaming vs hybrid
@@ -427,6 +861,8 @@ def incremental_pipeline(last_processed_date):
 3. **Monitor continuously** - track execution and quality
 4. **Test thoroughly** - unit, integration, E2E tests
 5. **Optimize performance** - parallelization, caching, incremental processing
+6. **Feature selection matters** - reduce noise, improve performance
+7. **Consistency is critical** - same transformations in train and inference
 
 ---
 
@@ -435,6 +871,7 @@ def incremental_pipeline(last_processed_date):
 - [Apache Airflow Documentation](https://airflow.apache.org/docs/)
 - [Apache Flink Documentation](https://flink.apache.org/docs/)
 - [Feature Engineering Best Practices](https://www.oreilly.com/library/view/feature-engineering-for/9781491953235/)
+- [Feature Engineering and Selection](http://www.feat.engineering/)
 
 ---
 
